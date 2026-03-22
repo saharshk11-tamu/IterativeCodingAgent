@@ -82,7 +82,7 @@ class ChatScreen(Screen):
     @on(AgentToken)
     def on_token(self, event: AgentToken) -> None:
         pane = self.query_one("#prompt-pane", PromptPane)
-        pane.append_token(f"[bold #a6e22e]agent[/bold #a6e22e]  {event.token}")
+        pane.append_token(event.token)
 
     @on(AgentActivity)
     def on_activity(self, event: AgentActivity) -> None:

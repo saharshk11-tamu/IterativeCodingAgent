@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from rich.markdown import Markdown as RichMarkdown
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import RichLog
@@ -46,7 +47,15 @@ class AgentPane(Vertical):
         ts = datetime.now().strftime("%H:%M:%S")
         style = KIND_STYLES.get(kind, "white")
         label = kind.replace("_", " ")
-        log.write(f"[dim]{ts}[/dim]  [{style}]{label}[/{style}]  {text}")
+        if kind == "thinking":
+            log.write(f"[dim]{ts}[/dim]  [{style}]{label}[/]")
+            try:
+                log.write(RichMarkdown(text))
+            except Exception as exc:
+                log.write(f"[dim](render error: {exc})[/dim]")
+                log.write(text)
+        else:
+            log.write(f"[dim]{ts}[/dim]  [{style}]{label}[/]  {text}")
 
     def clear(self) -> None:
         self.query_one("#activity-log", RichLog).clear()

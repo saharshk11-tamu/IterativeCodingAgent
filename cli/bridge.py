@@ -21,7 +21,6 @@ The UI thread is never blocked — only the agent worker thread waits.
 
 from __future__ import annotations
 
-import json
 import queue
 import threading
 
@@ -79,25 +78,22 @@ class AgentBridge:
         url = f"{self.config.base_url}/api/chat"
         payload = {
             "model": self.config.model,
-            "stream": True,
+            "stream": False,
             "messages": [{"role": "user", "content": user_text}],
+            "think": True,
         }
         try:
-            with httpx.stream("POST", url, json=payload, timeout=60) as resp:
-                resp.raise_for_status()
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    token = data.get("message", {}).get("content", "")
-                    if token:
-                        self._post_token(token)
-                    if data.get("done"):
-                        break
-            self._post_activity("done", "stream complete")
+            resp = httpx.post(url, json=payload, timeout=600)
+            resp.raise_for_status()
+            data = resp.json()
+            msg = data.get("message", {})
+            thinking = msg.get("thinking", "")
+            if thinking:
+                self._post_activity("thinking", thinking)
+            content = msg.get("content", "")
+            if content:
+                self._post_token(content)
+            self._post_activity("done", "response received")
         except Exception as exc:
             self._post_activity("error", str(exc))
         finally:
@@ -125,7 +121,12 @@ class AgentBridge:
             )
             resp.raise_for_status()
             data = resp.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            msg = data.get("choices", [{}])[0].get("message", {})
+            thinking = msg.get("reasoning_content", "")
+            print("THINKING:", thinking)
+            if thinking:
+                self._post_activity("thinking", thinking)
+            content = msg.get("content", "")
             if content:
                 self._post_token(content)
             self._post_activity("done", "response received")

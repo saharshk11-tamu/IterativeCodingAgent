@@ -14,7 +14,7 @@ A terminal UI for interacting with the agent, built with [Textual](https://githu
 - Provider selection — Ollama (local) or TAMU LLM (remote, OpenAI-compatible)
 - Model fetch — pulls available models from the selected provider on demand
 - Split-pane chat — conversation on the left, agent activity log on the right
-- Multiline input — `Enter` to send
+- `Enter` to send
 
 **Setup**
 
@@ -30,4 +30,4 @@ pip install -r requirements.txt
 python3 -m cli.app
 ```
 
-On the setup screen, pick a provider, enter credentials, fetch models, then connect. Already tested TAMU LLM.
+On the setup screen, pick a provider, enter credentials, fetch models, then connect. Already tested TAMU LLM, and Ollama (local). 

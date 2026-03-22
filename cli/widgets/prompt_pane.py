@@ -12,10 +12,13 @@ Key behaviour:
 
 from __future__ import annotations
 
+from rich.markdown import Markdown as RichMarkdown
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import RichLog, Static, TextArea
+
+_AGENT_PREFIX = "[bold #a6e22e]agent[/bold #a6e22e]"
 
 from cli.events import UserReplied, UserSubmitted
 
@@ -38,37 +41,12 @@ class PromptInput(TextArea):
 class PromptPane(Vertical):
     """Left conversation pane."""
 
-    DEFAULT_CSS = """
-    PromptPane {
-        width: 60%;
-    }
-    #history {
-        height: 1fr;
-        padding: 1 2;
-    }
-    #input-row {
-        height: auto;
-        max-height: 10;
-        padding: 0 1 1 1;
-    }
-    #prompt-input {
-        height: auto;
-        max-height: 8;
-    }
-    #input-hint {
-        color: $text-muted;
-        padding: 0 1;
-        height: 1;
-    }
-    #input-hint.reply-mode {
-        color: $warning;
-    }
-    """
-
     _reply_mode: bool = False
+    _stream_buffer: str = ""
 
     def compose(self) -> ComposeResult:
         yield RichLog(id="history", wrap=True, markup=True, highlight=True)
+        yield Static("", id="streaming", markup=True)
         yield Static("enter to send", id="input-hint")
         yield Vertical(
             PromptInput(id="prompt-input", language=None),
@@ -121,11 +99,20 @@ class PromptPane(Vertical):
     # ── Streaming helpers ─────────────────────────────────────────────────────
 
     def append_token(self, token: str) -> None:
-        self.query_one("#history", RichLog).write(token)
+        self._stream_buffer += token
+        self.query_one("#streaming", Static).update(_AGENT_PREFIX + "  " + self._stream_buffer)
 
     def finalize_response(self) -> None:
-        self.query_one("#history", RichLog).write("\n")
+        if self._stream_buffer:
+            log = self.query_one("#history", RichLog)
+            log.write(_AGENT_PREFIX)
+            log.write(RichMarkdown(self._stream_buffer))
+            log.write("")
+            self._stream_buffer = ""
+            self.query_one("#streaming", Static).update("")
 
     def clear(self) -> None:
         self._exit_reply_mode()
+        self._stream_buffer = ""
+        self.query_one("#streaming", Static).update("")
         self.query_one("#history", RichLog).clear()
