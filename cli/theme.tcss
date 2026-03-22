@@ -1,0 +1,114 @@
+/* cli/theme.tcss — uses Textual theme variables (set to "monokai" in app.py) */
+
+/* ── Setup screen ─────────────────────────────────────────────────────────── */
+
+#setup-box {
+    width: 60;
+    height: auto;
+    align: center middle;
+    border: round $accent;
+    padding: 2 3;
+    margin: 4;
+    background: $surface;
+}
+
+#setup-title {
+    text-style: bold;
+    color: $success;
+    text-align: center;
+    height: 1;
+}
+
+#setup-subtitle {
+    color: $text-muted;
+    text-align: center;
+    height: 1;
+    margin-bottom: 1;
+}
+
+#provider-toggle {
+    height: auto;
+    margin-bottom: 1;
+    border: none;
+    background: transparent;
+    padding: 0;
+}
+
+#panel-ollama, #panel-tamu {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#panel-ollama Label, #panel-tamu Label {
+    color: $text-muted;
+    height: 1;
+    margin-top: 1;
+}
+
+#status-line {
+    height: 1;
+    text-align: center;
+    color: $success;
+    margin-top: 1;
+}
+
+#status-line.error {
+    color: $error;
+}
+
+#spinner {
+    height: 1;
+    display: none;
+}
+
+.hidden {
+    display: none;
+}
+
+/* ── Chat screen ──────────────────────────────────────────────────────────── */
+
+#split {
+    height: 1fr;
+}
+
+#pane-divider {
+    width: 1;
+    color: $panel;
+    margin: 0;
+    padding: 0;
+}
+
+/* ── Prompt pane ─────────────────────────────────────────────────────────── */
+
+#history {
+    height: 1fr;
+    padding: 1 2;
+    scrollbar-gutter: stable;
+}
+
+#input-hint {
+    color: $text-muted;
+    height: 1;
+    padding: 0 2;
+}
+
+#input-hint.reply-mode {
+    color: $warning;
+}
+
+#input-row {
+    height: auto;
+    padding: 0 1 1 1;
+}
+
+#prompt-input {
+    height: auto;
+}
+
+/* ── Agent pane ──────────────────────────────────────────────────────────── */
+
+#activity-log {
+    height: 1fr;
+    padding: 1 2;
+    scrollbar-gutter: stable;
+}
