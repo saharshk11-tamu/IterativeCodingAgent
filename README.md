@@ -58,7 +58,9 @@ A terminal UI built with [Textual](https://github.com/Textualize/textual). It pr
 - A setup screen for LLM provider configuration
 - A main interface for entering coding requests and viewing the agent's iterative process
 
-### Agent — Intake Phase (`agent/`)
+### AGENT (`agent/`)
+
+#### Intake Phase 
 
 The intake phase runs before any code is written. It handles the initial user interaction and produces a structured `TaskSpec` that downstream phases (test generation, coding, etc.) will consume.
 
