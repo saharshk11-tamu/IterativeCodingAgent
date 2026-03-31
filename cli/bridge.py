@@ -17,6 +17,14 @@ The agent calls ask_user(question) when it needs more context:
   6. Agent continues with the answer in hand
 
 The UI thread is never blocked — only the agent worker thread waits.
+
+Agent integration
+-----------------
+AgentBridge satisfies agent.intake.BridgeProtocol, so IntakeAgent can call:
+  bridge.ask_user(q)          — clarification (blocking)
+  bridge.post_activity(k, t)  — log to agent pane
+  bridge.post_token(t)        — stream text to conversation pane
+  bridge.call_llm(messages)   — synchronous LLM call, returns str
 """
 
 from __future__ import annotations
@@ -52,10 +60,7 @@ class AgentBridge:
     # ── Public entry point ────────────────────────────────────────────────────
 
     def run(self, user_text: str) -> None:
-        target = (
-            self._run_ollama if self.config.provider == "ollama" else self._run_tamu
-        )
-        threading.Thread(target=target, args=(user_text,), daemon=True).start()
+        threading.Thread(target=self._run_intake, args=(user_text,), daemon=True).start()
 
     # ── Clarification helper (called from inside agent worker thread) ─────────
 
@@ -71,69 +76,62 @@ class AgentBridge:
         self._post_activity("status", "got answer, resuming...")
         return answer
 
-    # ── Ollama ────────────────────────────────────────────────────────────────
+    # ── BridgeProtocol public surface (called by IntakeAgent) ────────────────
 
-    def _run_ollama(self, user_text: str) -> None:
-        self._post_activity("status", f"sending to {self.config.model}...")
-        url = f"{self.config.base_url}/api/chat"
-        payload = {
-            "model": self.config.model,
-            "stream": False,
-            "messages": [{"role": "user", "content": user_text}],
-            "think": True,
-        }
+    def post_activity(self, kind: str, text: str) -> None:
+        self._post_activity(kind, text)
+
+    def post_token(self, token: str) -> None:
+        self._post_token(token)
+
+    def call_llm(self, messages: list[dict]) -> str:
+        """Synchronous LLM call used by IntakeAgent for classification/extraction."""
+        if self.config.provider == "ollama":
+            return self._call_llm_ollama(messages)
+        return self._call_llm_tamu(messages)
+
+    # ── Intake entry point ────────────────────────────────────────────────────
+
+    def _run_intake(self, user_text: str) -> None:
+        from agent.intake import IntakeAgent
+
         try:
-            resp = httpx.post(url, json=payload, timeout=600)
-            resp.raise_for_status()
-            data = resp.json()
-            msg = data.get("message", {})
-            thinking = msg.get("thinking", "")
-            if thinking:
-                self._post_activity("thinking", thinking)
-            content = msg.get("content", "")
-            if content:
-                self._post_token(content)
-            self._post_activity("done", "response received")
+            intake = IntakeAgent(self)
+            spec = intake.run(user_text)
+            if spec is not None:
+                self._post_token(_format_spec_summary(spec))
+            # TODO: pass spec to next pipeline stage (test generation, etc.)
         except Exception as exc:
             self._post_activity("error", str(exc))
         finally:
             self._post_done()
 
-    # ── TAMU LLM (OpenAI-compatible) ─────────────────────────────────────────
+    # ── LLM backends ─────────────────────────────────────────────────────────
 
-    def _run_tamu(self, user_text: str) -> None:
-        self._post_activity("status", f"sending to {self.config.model} via TAMU...")
+    def _call_llm_ollama(self, messages: list[dict]) -> str:
+        url = f"{self.config.base_url}/api/chat"
+        payload = {"model": self.config.model, "stream": False, "messages": messages, "think": True}
+        resp = httpx.post(url, json=payload, timeout=600)
+        resp.raise_for_status()
+        msg = resp.json().get("message", {})
+        thinking = msg.get("thinking", "")
+        if thinking:
+            self._post_activity("thinking", thinking)
+        return msg.get("content", "")
+
+    def _call_llm_tamu(self, messages: list[dict]) -> str:
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": self.config.model,
-            "stream": False,
-            "messages": [{"role": "user", "content": user_text}],
-        }
-        try:
-            resp = httpx.post(
-                self.config.base_url,
-                json=payload,
-                headers=headers,
-                timeout=120,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            msg = data.get("choices", [{}])[0].get("message", {})
-            thinking = msg.get("reasoning_content", "")
-            print("THINKING:", thinking)
-            if thinking:
-                self._post_activity("thinking", thinking)
-            content = msg.get("content", "")
-            if content:
-                self._post_token(content)
-            self._post_activity("done", "response received")
-        except Exception as exc:
-            self._post_activity("error", str(exc))
-        finally:
-            self._post_done()
+        payload = {"model": self.config.model, "stream": False, "messages": messages}
+        resp = httpx.post(self.config.base_url, json=payload, headers=headers, timeout=120)
+        resp.raise_for_status()
+        msg = resp.json().get("choices", [{}])[0].get("message", {})
+        thinking = msg.get("reasoning_content", "")
+        if thinking:
+            self._post_activity("thinking", thinking)
+        return msg.get("content", "")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -152,3 +150,26 @@ class AgentBridge:
 
     def _post_done(self) -> None:
         self.screen.app.call_from_thread(self.screen.post_message, AgentDone())
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _format_spec_summary(spec) -> str:
+    lines = [
+        "**Task ready**\n",
+        f"- **Language**: {spec.language}",
+        f"- **Type**: {spec.task_type}",
+        f"- **Description**: {spec.refined_description}",
+    ]
+    if spec.requirements:
+        lines.append("- **Requirements**:")
+        lines.extend(f"  - {r}" for r in spec.requirements)
+    if spec.constraints:
+        lines.append("- **Constraints**:")
+        lines.extend(f"  - {c}" for c in spec.constraints)
+    if spec.dependencies:
+        lines.append(f"- **Dependencies**: {', '.join(spec.dependencies)}")
+    if spec.success_metrics:
+        lines.append("- **Success metrics**:")
+        lines.extend(f"  - {m}" for m in spec.success_metrics)
+    return "\n".join(lines)
