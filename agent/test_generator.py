@@ -102,27 +102,3 @@ class TestGenerator:
         """Helper to rip the code out of standard Markdown fences."""
         match = re.search(r"
 http://googleusercontent.com/immersive_entry_chip/0
-
-### Don't forget the wiring!
-To make this code actually run when you start the app, remember to update `cli/bridge.py` as mentioned earlier. In the `_run_intake` method of `cli/bridge.py`, you will replace `test_gen.generate(spec)` with `test_gen.generate_and_save(spec)` so it creates the file. 
-
-Here is the exact snippet for `cli/bridge.py` (around line 77):
-```python
-        try:
-            intake = IntakeAgent(self)
-            spec = intake.run(user_text)
-            if spec is not None:
-                self._post_token(_format_spec_summary(spec))
-                
-                # --- ADD YOUR TEST GENERATION HERE ---
-                from agent.test_generator import TestGenerator
-                self._post_token("\n\n---\n\n*Moving to Test Generation Phase...*\n\n")
-                
-                test_gen = TestGenerator(self)
-                test_code = test_gen.generate_and_save(spec) # Calls your new method
-                
-                lang = spec.language.lower()
-                self._post_token(f"**Generated Tests:**\n```{lang}\n{test_code}\n```\n")
-                # -------------------------------------
-
-            # TODO: pass spec to next pipeline stage (code generation, etc.)
