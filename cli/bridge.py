@@ -94,13 +94,28 @@ class AgentBridge:
 
     def _run_intake(self, user_text: str) -> None:
         from agent.intake import IntakeAgent
-
+        from agent.test_generator import TestGenerator
+      
         try:
             intake = IntakeAgent(self)
             spec = intake.run(user_text)
             if spec is not None:
+                # 1. Output the intake summary
                 self._post_token(_format_spec_summary(spec))
-            # TODO: pass spec to next pipeline stage (test generation, etc.)
+                
+                # 2. Phase: Test Generation
+                self._post_activity("status", "transitioning to test generation...")
+                self._post_token("\n\n---\n\n*Moving to Test Generation Phase...*\n\n")
+                
+                test_gen = TestGenerator(self)
+                test_code = test_gen.generate_and_save(spec)
+                
+                # Stream the generated tests to the UI
+                lang = spec.language.lower()
+                self._post_token(f"**Generated Tests:**\n```{lang}\n{test_code}\n```\n")
+                
+            # TODO: pass test_code and spec to next pipeline stage (Code Generation / Sandbox execution)
+            
         except Exception as exc:
             self._post_activity("error", str(exc))
         finally:
