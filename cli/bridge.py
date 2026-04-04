@@ -29,6 +29,7 @@ AgentBridge satisfies agent.intake.BridgeProtocol, so IntakeAgent can call:
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 
@@ -37,6 +38,13 @@ from textual.screen import Screen
 
 from cli.events import AgentActivity, AgentDone, AgentMessage, AgentQuestion, AgentToken
 from cli.screens.setup_screen import LLMConfig
+
+log = logging.getLogger("bridge")
+logging.basicConfig(
+    filename="bridge-debug.log",
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+)
 
 
 class AgentBridge:
@@ -60,7 +68,9 @@ class AgentBridge:
     # ── Public entry point ────────────────────────────────────────────────────
 
     def run(self, user_text: str) -> None:
-        threading.Thread(target=self._run_intake, args=(user_text,), daemon=True).start()
+        threading.Thread(
+            target=self._run_intake, args=(user_text,), daemon=True
+        ).start()
 
     # ── Clarification helper (called from inside agent worker thread) ─────────
 
@@ -98,7 +108,7 @@ class AgentBridge:
     def _run_intake(self, user_text: str) -> None:
         from agent.intake import IntakeAgent
         from agent.test_generator import TestGenerator
-      
+
         try:
             intake = IntakeAgent(self)
             spec = intake.run(user_text)
@@ -108,12 +118,12 @@ class AgentBridge:
 
                 # 2. Phase: Test Generation
                 self._post_activity("status", "transitioning to test generation...")
-                
+
                 test_gen = TestGenerator(self)
                 test_gen.generate_and_save(spec)
-                
+
             # TODO: pass test_code and spec to next pipeline stage (Code Generation / Sandbox execution)
-            
+
         except Exception as exc:
             self._post_activity("error", str(exc))
         finally:
@@ -123,7 +133,12 @@ class AgentBridge:
 
     def _call_llm_ollama(self, messages: list[dict]) -> str:
         url = f"{self.config.base_url}/api/chat"
-        payload = {"model": self.config.model, "stream": False, "messages": messages, "think": True}
+        payload = {
+            "model": self.config.model,
+            "stream": False,
+            "messages": messages,
+            "think": True,
+        }
         resp = httpx.post(url, json=payload, timeout=600)
         resp.raise_for_status()
         msg = resp.json().get("message", {})
@@ -143,8 +158,11 @@ class AgentBridge:
             "Content-Type": "application/json",
         }
         payload = {"model": self.config.model, "stream": False, "messages": messages}
-        resp = httpx.post(self.config.base_url, json=payload, headers=headers, timeout=120)
+        resp = httpx.post(
+            self.config.base_url, json=payload, headers=headers, timeout=120
+        )
         resp.raise_for_status()
+        log.debug("TAMU raw response: %s", resp.text)
         msg = resp.json().get("choices", [{}])[0].get("message", {})
         # Prefer reasoning_content field; fall back to <think> tags in content
         # Use `or ""` to guard against explicit null values from the API
@@ -181,6 +199,7 @@ class AgentBridge:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 import re as _re
+
 
 def _extract_think_tags(content: str) -> tuple[str, str]:
     """
