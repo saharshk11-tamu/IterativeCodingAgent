@@ -18,6 +18,7 @@ from cli.bridge import AgentBridge
 from cli.events import (
     AgentActivity,
     AgentDone,
+    AgentMessage,
     AgentQuestion,
     AgentToken,
     UserReplied,
@@ -78,6 +79,10 @@ class ChatScreen(Screen):
         self.query_one("#prompt-pane", PromptPane).show_question(event.question)
 
     # ── Route agent events to widgets ────────────────────────────────────────
+
+    @on(AgentMessage)
+    def on_agent_message(self, event: AgentMessage) -> None:
+        self.query_one("#prompt-pane", PromptPane).add_agent_message(event.text)
 
     @on(AgentToken)
     def on_token(self, event: AgentToken) -> None:

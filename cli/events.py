@@ -43,6 +43,17 @@ class AgentToken(Message):
         self.token = token
 
 
+class AgentMessage(Message):
+    """
+    A complete conversational message from the agent posted mid-flow
+    (not streamed). Rendered as an agent bubble in the conversation pane.
+    """
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+
 class AgentActivity(Message):
     """
     A structured agent event shown in the right pane.

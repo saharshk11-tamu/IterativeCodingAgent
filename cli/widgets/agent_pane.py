@@ -22,7 +22,11 @@ KIND_STYLES: dict[str, str] = {
     "status":      "bold #66d9ef",   # monokai cyan
     "error":       "bold #f92672",   # monokai red
     "done":        "bold #a6e22e",   # monokai green
+    "task_ready":  "bold #fd971f",   # monokai orange
 }
+
+# Kinds that render their body as Markdown
+_MARKDOWN_KINDS = {"thinking", "task_ready"}
 
 
 class AgentPane(Vertical):
@@ -47,7 +51,7 @@ class AgentPane(Vertical):
         ts = datetime.now().strftime("%H:%M:%S")
         style = KIND_STYLES.get(kind, "white")
         label = kind.replace("_", " ")
-        if kind == "thinking":
+        if kind in _MARKDOWN_KINDS:
             log.write(f"[dim]{ts}[/dim]  [{style}]{label}[/]")
             try:
                 log.write(RichMarkdown(text))

@@ -14,6 +14,24 @@ import os
 from agent.task_spec import TaskSpec
 from agent.intake import BridgeProtocol
 
+_GENERATION_START_SYSTEM = """\
+You are the friendly face of a coding agent moving into the test generation phase.
+The user's task spec is ready. Write a single short sentence (max 15 words) that:
+  - Signals you're now going to write the test suite
+  - Optionally references the language or task type
+
+Do NOT write any tests. Do NOT use markdown. Output only the sentence."""
+
+_GENERATION_DONE_SYSTEM = """\
+You are the friendly face of a coding agent that just finished writing a test suite.
+Write a single short sentence (max 20 words) that:
+  - Tells the user you've written the tests
+  - Mentions the number of lines and invites them to review
+
+Do NOT use markdown. Output only the sentence.
+
+You will be given: language, line count, number of success metrics covered."""
+
 _TEST_SYSTEM_PROMPT = """\
 You are an expert software tester acting as the Test Generation module for an autonomous coding agent. 
 Your goal is to write a comprehensive, robust test suite for a task before the implementation is written (Test-Driven Development).
@@ -31,27 +49,57 @@ class TestGenerator:
     def __init__(self, bridge: BridgeProtocol):
         self._bridge = bridge
 
+    def _generate_transition(self, system: str, user_content: str) -> str:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+        return self._bridge.call_llm(messages).strip()
+
     def generate_and_save(self, spec: TaskSpec, workspace_dir: str = "./workspace") -> str:
         """
-        Generates the tests and saves them to a file for the execution environment.
+        Generates the tests, shows them to the user, then waits for approval
+        before writing any files. Loops until the user agrees.
         """
         self._bridge.post_activity("status", "generating test suite...")
-        
+        self._bridge.post_message(self._generate_transition(
+            _GENERATION_START_SYSTEM,
+            f"Language: {spec.language}, task type: {spec.task_type}, "
+            f"description: {spec.refined_description}",
+        ))
+
         test_code = self.generate(spec)
-        
-        # Create workspace if it doesn't exist
-        os.makedirs(workspace_dir, exist_ok=True)
-        
-        # Save to a standardized file name (can be adjusted based on language)
+
         ext = "py" if spec.language.lower() == "python" else "txt"
         file_path = os.path.join(workspace_dir, f"test_solution.{ext}")
-        
+        line_count = len(test_code.splitlines())
+
+        self._bridge.post_message(self._generate_transition(
+            _GENERATION_DONE_SYSTEM,
+            f"Language: {spec.language}, lines: {line_count}, "
+            f"success metrics covered: {len(spec.success_metrics)}",
+        ))
+
+        # Loop until the user approves saving — show file contents each time
+        lang = spec.language.lower()
+        while True:
+            answer = self._bridge.ask_user(
+                f"**Proposed test file** — `{file_path}` ({line_count} lines):\n\n"
+                f"```{lang}\n{test_code}\n```\n\n"
+                f"Save this file? (yes/no)"
+            )
+            if answer.strip().lower().startswith("y"):
+                break
+            self._bridge.post_activity("status", "save declined — waiting for approval...")
+
+        # Create workspace if it doesn't exist
+        os.makedirs(workspace_dir, exist_ok=True)
+
         with open(file_path, "w") as f:
             f.write(test_code)
-            
-        line_count = len(test_code.splitlines())
+
         self._bridge.post_activity("status", f"test generation complete — {line_count} lines saved to {file_path}")
-        
+
         return test_code
 
     def generate(self, spec: TaskSpec, max_retries: int = 2) -> str:
@@ -100,5 +148,7 @@ class TestGenerator:
 
     def _extract_code(self, response: str) -> str:
         """Helper to rip the code out of standard Markdown fences."""
-        match = re.search(r"
-http://googleusercontent.com/immersive_entry_chip/0
+        match = re.search(r"```(?:\w+)?\s*\n(.*?)```", response, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return response.strip()

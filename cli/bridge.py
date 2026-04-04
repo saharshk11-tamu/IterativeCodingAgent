@@ -35,7 +35,7 @@ import threading
 import httpx
 from textual.screen import Screen
 
-from cli.events import AgentActivity, AgentDone, AgentQuestion, AgentToken
+from cli.events import AgentActivity, AgentDone, AgentMessage, AgentQuestion, AgentToken
 from cli.screens.setup_screen import LLMConfig
 
 
@@ -84,6 +84,9 @@ class AgentBridge:
     def post_token(self, token: str) -> None:
         self._post_token(token)
 
+    def post_message(self, text: str) -> None:
+        self._post_message(text)
+
     def call_llm(self, messages: list[dict]) -> str:
         """Synchronous LLM call used by IntakeAgent for classification/extraction."""
         if self.config.provider == "ollama":
@@ -100,19 +103,14 @@ class AgentBridge:
             intake = IntakeAgent(self)
             spec = intake.run(user_text)
             if spec is not None:
-                # 1. Output the intake summary
-                self._post_token(_format_spec_summary(spec))
-                
+                # 1. Output the intake summary to the agent pane
+                self._post_activity("task_ready", _format_spec_summary(spec))
+
                 # 2. Phase: Test Generation
                 self._post_activity("status", "transitioning to test generation...")
-                self._post_token("\n\n---\n\n*Moving to Test Generation Phase...*\n\n")
                 
                 test_gen = TestGenerator(self)
-                test_code = test_gen.generate_and_save(spec)
-                
-                # Stream the generated tests to the UI
-                lang = spec.language.lower()
-                self._post_token(f"**Generated Tests:**\n```{lang}\n{test_code}\n```\n")
+                test_gen.generate_and_save(spec)
                 
             # TODO: pass test_code and spec to next pipeline stage (Code Generation / Sandbox execution)
             
@@ -129,10 +127,15 @@ class AgentBridge:
         resp = httpx.post(url, json=payload, timeout=600)
         resp.raise_for_status()
         msg = resp.json().get("message", {})
-        thinking = msg.get("thinking", "")
+        # Prefer the dedicated thinking field; fall back to <think> tags in content
+        # Use `or ""` to guard against explicit null values from the API
+        thinking = msg.get("thinking") or ""
+        content = msg.get("content") or ""
+        if not thinking:
+            thinking, content = _extract_think_tags(content)
         if thinking:
             self._post_activity("thinking", thinking)
-        return msg.get("content", "")
+        return content
 
     def _call_llm_tamu(self, messages: list[dict]) -> str:
         headers = {
@@ -143,15 +146,23 @@ class AgentBridge:
         resp = httpx.post(self.config.base_url, json=payload, headers=headers, timeout=120)
         resp.raise_for_status()
         msg = resp.json().get("choices", [{}])[0].get("message", {})
-        thinking = msg.get("reasoning_content", "")
+        # Prefer reasoning_content field; fall back to <think> tags in content
+        # Use `or ""` to guard against explicit null values from the API
+        thinking = msg.get("reasoning_content") or ""
+        content = msg.get("content") or ""
+        if not thinking:
+            thinking, content = _extract_think_tags(content)
         if thinking:
             self._post_activity("thinking", thinking)
-        return msg.get("content", "")
+        return content
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _post_token(self, token: str) -> None:
         self.screen.app.call_from_thread(self.screen.post_message, AgentToken(token))
+
+    def _post_message(self, text: str) -> None:
+        self.screen.app.call_from_thread(self.screen.post_message, AgentMessage(text))
 
     def _post_activity(self, kind: str, text: str) -> None:
         self.screen.app.call_from_thread(
@@ -168,6 +179,23 @@ class AgentBridge:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+import re as _re
+
+def _extract_think_tags(content: str) -> tuple[str, str]:
+    """
+    Pull <think>...</think> blocks out of content.
+    Returns (thinking_text, cleaned_content).
+    """
+    thinking_parts: list[str] = []
+
+    def _collect(m: _re.Match) -> str:
+        thinking_parts.append(m.group(1).strip())
+        return ""
+
+    cleaned = _re.sub(r"<think>(.*?)</think>", _collect, content, flags=_re.DOTALL)
+    return "\n\n".join(thinking_parts), cleaned.strip()
+
 
 def _format_spec_summary(spec) -> str:
     lines = [

@@ -82,7 +82,6 @@
 
 #history {
     height: 1fr;
-    padding: 1 2;
     scrollbar-gutter: stable;
 }
 

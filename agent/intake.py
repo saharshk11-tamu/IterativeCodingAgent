@@ -28,6 +28,7 @@ class BridgeProtocol(Protocol):
     def ask_user(self, question: str) -> str: ...
     def post_activity(self, kind: str, text: str) -> None: ...
     def post_token(self, token: str) -> None: ...
+    def post_message(self, text: str) -> None: ...
     def call_llm(self, messages: list[dict]) -> str: ...
 
 
@@ -125,6 +126,35 @@ Rules:
 - success_metrics: use the user-confirmed metrics from the conversation
 - Output ONLY the JSON object. No markdown fences. No explanation."""
 
+_CLARIFICATION_TRANSITION_SYSTEM = """\
+You are the friendly face of a coding agent. The user just submitted a coding
+request. Write a single short sentence (max 15 words) that:
+  - Acknowledges their request warmly
+  - Sets the expectation that you'll ask a clarifying question
+
+Do NOT ask the question. Do NOT use markdown. Output only the sentence."""
+
+_METRICS_TRANSITION_SYSTEM = """\
+You are the friendly face of a coding agent. You have just finished clarifying
+a coding task and are about to propose success metrics. Write a single short
+sentence (max 15 words) that:
+  - Signals you have a good grasp of the task
+  - Introduces the upcoming metrics naturally
+
+Do NOT list the metrics. Do NOT use markdown. Output only the sentence."""
+
+_METRICS_REVISION_SYSTEM = """\
+You are updating a list of success metrics based on user feedback.
+
+You will be given the current metrics and the user's requested changes.
+Output ONLY the revised numbered list of metrics — no preamble, no explanation.
+Apply the user's changes exactly: add, remove, or reword items as requested.
+
+Format:
+1. <metric>
+2. <metric>
+..."""
+
 _REFUSAL_MESSAGE = (
     "I can only help with coding and programming tasks. "
     "Please describe a software problem — for example: writing a function, "
@@ -192,21 +222,37 @@ class IntakeAgent:
 
         # Phase 2: clarification loop
         self._bridge.post_activity("status", "analyzing request...")
+        self._bridge.post_message(self._generate_transition(
+            user_prompt, _CLARIFICATION_TRANSITION_SYSTEM
+        ))
         turns = self._run_clarification_loop()
 
         # Phase 3: propose and confirm success metrics
         self._bridge.post_activity("status", "defining success metrics...")
+        self._bridge.post_message(self._generate_transition(
+            user_prompt, _METRICS_TRANSITION_SYSTEM
+        ))
         self._confirm_success_metrics()
 
         # Phase 4: extract structured spec
         self._bridge.post_activity("status", "finalizing task specification...")
         spec = self._extract_task_spec(user_prompt, clarification_turns=turns)
+
         self._bridge.post_activity(
             "status",
             f"intake complete — {spec.task_type} / {spec.language} "
             f"/ {turns} clarification turn(s)",
         )
         return spec
+
+    # ── Transition helper ─────────────────────────────────────────────────────
+
+    def _generate_transition(self, user_prompt: str, system: str) -> str:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_prompt},
+        ]
+        return self._bridge.call_llm(messages).strip()
 
     # ── Phase 1: pre-check ────────────────────────────────────────────────────
 
@@ -296,9 +342,9 @@ class IntakeAgent:
 
     def _confirm_success_metrics(self) -> None:
         """
-        Generate proposed success metrics from the conversation, present them
-        to the user, and record the user's confirmed (or revised) metrics in
-        history so extraction can include them.
+        Generate proposed success metrics, then loop until the user confirms
+        they are correct. Revisions are applied by the LLM and re-presented.
+        The final confirmed metrics are recorded in history for extraction.
         """
         conversation_text = "\n".join(
             f"{m['role'].upper()}: {m['content']}" for m in self._history
@@ -307,18 +353,41 @@ class IntakeAgent:
             {"role": "system", "content": _METRICS_GENERATION_SYSTEM},
             {"role": "user", "content": f"Conversation:\n{conversation_text}"},
         ]
-        proposed = self._bridge.call_llm(messages).strip()
+        metrics = self._bridge.call_llm(messages).strip()
 
-        question = (
-            "Here are the proposed success metrics for this task:\n\n"
-            f"{proposed}\n\n"
-            "Do these look correct, or would you like to add, remove, or change any of them?"
+        while True:
+            answer = self._bridge.ask_user(
+                f"Here are the proposed success metrics for this task:\n\n"
+                f"{metrics}\n\n"
+                "Do these look correct? (yes / no — or describe what to change)"
+            )
+
+            if answer.strip().lower().startswith("y"):
+                break
+
+            feedback = answer.strip()
+            if feedback.lower() in {"no", "n", "nope", "nah"}:
+                feedback = self._bridge.ask_user(
+                    "What would you like to add, remove, or change?"
+                )
+
+            # Revise the metrics list based on feedback
+            self._bridge.post_activity("status", "revising success metrics...")
+            revision_messages = [
+                {"role": "system", "content": _METRICS_REVISION_SYSTEM},
+                {
+                    "role": "user",
+                    "content": f"Current metrics:\n{metrics}\n\nRequested changes: {feedback}",
+                },
+            ]
+            metrics = self._bridge.call_llm(revision_messages).strip()
+
+        # Record the confirmed metrics in history so extraction picks them up
+        confirmed_exchange = (
+            f"Here are the confirmed success metrics:\n{metrics}"
         )
-        answer = self._bridge.ask_user(question)
-
-        # Record the exchange so extraction sees the confirmed metrics
-        self._history.append({"role": "assistant", "content": question})
-        self._history.append({"role": "user", "content": answer})
+        self._history.append({"role": "assistant", "content": confirmed_exchange})
+        self._history.append({"role": "user", "content": "Yes, those metrics look correct."})
 
     # ── Phase 4: extraction ───────────────────────────────────────────────────
 
