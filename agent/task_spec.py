@@ -11,6 +11,41 @@ from typing import Any, Literal
 
 MetricKind = Literal["pass_fail", "maximize", "minimize"]
 
+_MAXIMIZE_HINTS = (
+    "accuracy",
+    "precision",
+    "recall",
+    "f1",
+    "auc",
+    "score",
+    "throughput",
+    "success rate",
+    "at least",
+    "minimum",
+    "greater than",
+    "higher",
+    "maximize",
+)
+_MINIMIZE_HINTS = (
+    "latency",
+    "execution time",
+    "runtime",
+    "time",
+    "duration",
+    "memory",
+    "loss",
+    "error",
+    "size",
+    "cost",
+    "at most",
+    "no more than",
+    "less than",
+    "under ",
+    "below ",
+    "minimize",
+    "not exceed",
+)
+
 
 @dataclass(frozen=True)
 class MetricSpec:
@@ -35,6 +70,14 @@ class MetricSpec:
         if kind not in {"pass_fail", "maximize", "minimize"}:
             kind = "pass_fail"
 
+        name = str(data.get("name", "metric")).strip() or "metric"
+        description = (
+            str(data.get("description", "")).strip()
+            or name
+            or "metric"
+        )
+        kind = _normalize_metric_kind(kind, name, description)
+
         raw_target = data.get("target", True)
         if kind == "pass_fail":
             if isinstance(raw_target, bool):
@@ -50,8 +93,8 @@ class MetricSpec:
                 target = 0.0
 
         return cls(
-            name=str(data.get("name", "metric")).strip() or "metric",
-            description=str(data.get("description", "")).strip() or str(data.get("name", "metric")).strip() or "metric",
+            name=name,
+            description=description,
             kind=kind,
             target=target,
             priority=priority if priority is not None else int(data.get("priority", 1)),
@@ -101,3 +144,18 @@ class TaskSpec:
             "metrics": [metric.to_dict() for metric in self.metrics],
             "clarification_turns": self.clarification_turns,
         }
+
+
+def _normalize_metric_kind(kind: str, name: str, description: str) -> MetricKind:
+    if kind == "pass_fail":
+        return "pass_fail"
+
+    text = f"{name} {description}".lower()
+    maximize_hits = sum(1 for hint in _MAXIMIZE_HINTS if hint in text)
+    minimize_hits = sum(1 for hint in _MINIMIZE_HINTS if hint in text)
+
+    if maximize_hits > minimize_hits:
+        return "maximize"
+    if minimize_hits > maximize_hits:
+        return "minimize"
+    return "maximize" if kind == "maximize" else "minimize"

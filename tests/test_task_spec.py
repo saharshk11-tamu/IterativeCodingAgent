@@ -35,6 +35,32 @@ class MetricSpecTests(unittest.TestCase):
         self.assertEqual(metric.target, True)
         self.assertEqual(metric.target_text(), "must pass")
 
+    def test_from_dict_corrects_accuracy_direction(self) -> None:
+        metric = MetricSpec.from_dict(
+            {
+                "name": "Validation Accuracy",
+                "description": "Validation accuracy should be at least 0.95.",
+                "kind": "minimize",
+                "target": 0.95,
+            },
+            priority=1,
+        )
+
+        self.assertEqual(metric.kind, "maximize")
+
+    def test_from_dict_corrects_runtime_direction(self) -> None:
+        metric = MetricSpec.from_dict(
+            {
+                "name": "Execution Time",
+                "description": "Total runtime should not exceed 2 seconds.",
+                "kind": "maximize",
+                "target": 2.0,
+            },
+            priority=2,
+        )
+
+        self.assertEqual(metric.kind, "minimize")
+
 
 class TaskSpecTests(unittest.TestCase):
     def test_success_metrics_property_maps_metric_descriptions(self) -> None:

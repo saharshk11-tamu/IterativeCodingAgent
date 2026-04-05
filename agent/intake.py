@@ -89,6 +89,10 @@ Rules:
 - Every metric must be machine-checkable.
 - Include numeric target values when relevant, such as accuracy thresholds,
   latency ceilings, throughput minima, or memory limits.
+- Use "maximize" for metrics where larger is better, such as accuracy,
+  recall, F1, throughput, or score.
+- Use "minimize" for metrics where smaller is better, such as latency,
+  runtime, execution time, memory, loss, or error.
 - Prefer 1 to 4 metrics total.
 - Make the first metric the primary optimization target.
 - If the user did not specify an exact numeric threshold, propose a reasonable

@@ -53,6 +53,29 @@ class WorkspaceRuntime:
         self.agent_root.mkdir(parents=True, exist_ok=True)
         self._load_install_history()
 
+    def workspace_entries(self) -> list[str]:
+        entries: list[str] = []
+        for child in sorted(self.workspace_root.iterdir(), key=lambda item: item.name):
+            suffix = "/" if child.is_dir() else ""
+            entries.append(child.name + suffix)
+        return entries
+
+    def clear_workspace(self) -> None:
+        for child in list(self.workspace_root.iterdir()):
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        self._reset_runtime_state()
+        self.workspace_root.mkdir(parents=True, exist_ok=True)
+        self.agent_root.mkdir(parents=True, exist_ok=True)
+
+    def reset_agent_state(self) -> None:
+        if self.agent_root.exists():
+            shutil.rmtree(self.agent_root)
+        self._reset_runtime_state()
+        self.agent_root.mkdir(parents=True, exist_ok=True)
+
     def list_files(self, path: str = ".") -> ToolOutcome:
         root = self._resolve_path(path, allow_missing=False)
         if root.is_file():
@@ -312,3 +335,8 @@ class WorkspaceRuntime:
                 "command": command,
             },
         )
+
+    def _reset_runtime_state(self) -> None:
+        self.extra_packages = []
+        self.install_history = []
+        self._touched_paths.clear()
