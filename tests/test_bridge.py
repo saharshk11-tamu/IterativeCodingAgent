@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from cli.bridge import AgentBridge
 from cli.events import AgentActivity, AgentDone
+from agent.task_spec import MetricSpec, TaskSpec
 from llm import LLMConfig, LLMResult
 
 
@@ -61,3 +62,25 @@ class AgentBridgeTests(unittest.TestCase):
             )
         )
         self.assertTrue(any(isinstance(message, AgentDone) for message in screen.messages))
+
+    def test_run_invokes_automation_after_intake(self) -> None:
+        config = LLMConfig(provider="openai", model="gpt-test", api_key="sk-test")
+        screen = _FakeScreen()
+        bridge = AgentBridge(config, screen)
+        spec = TaskSpec(
+            original_prompt="hello",
+            refined_description="Write a function.",
+            language="python",
+            task_type="function",
+            metrics=[
+                MetricSpec("tests", "All tests pass", "pass_fail", True, 1),
+            ],
+        )
+
+        with patch("agent.intake.IntakeAgent.run") as mock_intake_run, patch(
+            "agent.automation.AutomationOrchestrator.run"
+        ) as mock_automation_run:
+            mock_intake_run.return_value = spec
+            bridge._run_intake("hello")
+
+        mock_automation_run.assert_called_once()

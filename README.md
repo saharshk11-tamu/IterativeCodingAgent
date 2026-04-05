@@ -1,6 +1,13 @@
 # IterativeCodingAgent
 
-An iterative coding agent with a Textual terminal UI. The current implementation takes a coding request, clarifies requirements, defines success metrics, generates tests, and saves the proposed test file after user approval.
+An iterative coding agent with a Textual terminal UI. The current implementation can:
+
+- connect to hosted LLM providers
+- clarify a coding task
+- confirm structured executable metrics and targets
+- generate evaluator artifacts under `workspace/.agent/`
+- run an automated Python-first improvement loop inside `workspace/`
+- execute evaluation and helper Python commands through `uv`
 
 ![Architecture](https://github.com/user-attachments/assets/e6322086-bd0d-4e92-9064-f89a5dcfb912)
 
@@ -8,19 +15,17 @@ An iterative coding agent with a Textual terminal UI. The current implementation
 
 ## Setup
 
-Requirements: Python 3.11+
+Requirements: Python 3.12+, `uv`
 
 ```bash
 git clone <repo-url>
 cd IterativeCodingAgent
-python3 -m venv .venv
-source .venv/bin/activate       # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+uv sync
 ```
 
 ### Hosted Providers
 
-This milestone supports:
+Supported providers:
 
 - OpenAI
 - Anthropic
@@ -33,10 +38,43 @@ You need an API key for at least one provider. The setup screen can fetch model 
 ## Run
 
 ```bash
-python3 -m cli.app
+uv run python -m cli.app
 ```
 
 On the setup screen, pick a provider, enter an API key, optionally fetch models, enter a model ID, then connect.
+
+---
+
+## Workflow
+
+The current workflow is:
+
+```text
+User prompt
+  -> coding-task pre-check
+  -> clarification loop
+  -> structured metric and target confirmation
+  -> TaskSpec extraction
+  -> workspace grounding
+  -> evaluator generation under workspace/.agent/
+  -> baseline evaluator run
+  -> automated implementation loop in workspace/
+  -> stop on target hit, plateau, iteration budget, or time limit
+  -> final metric summary and run report
+```
+
+### Workspace Runtime
+
+The automation phase uses a fixed tool API rather than giving the model direct shell access. The agent may modify only `workspace/`.
+
+Python execution is mediated by `uv`:
+
+- evaluator runs
+- Python test runs
+- Python script runs
+- transient package installs via `uv run --with ...`
+
+Transient package installs do not modify `pyproject.toml` or `uv.lock`. Run artifacts are written under `workspace/.agent/`.
 
 ---
 
@@ -54,73 +92,30 @@ tail -f bridge-debug.log
 
 ### CLI (`cli/`)
 
-A Textual UI with a 60/40 layout:
-
-- Left pane: full conversation history with separate widgets for user messages, agent messages, and agent questions.
-- Right pane: timestamped status updates, task summaries, and errors.
-- Setup screen: hosted LLM provider configuration for OpenAI, Anthropic, and Gemini, with optional model fetching and manual model entry.
+- 60/40 Textual layout for conversation and agent activity
+- hosted provider setup for OpenAI, Anthropic, and Gemini
+- activity log entries for status, tool calls, tool results, and metrics
 
 ### Agent (`agent/`)
 
-#### Intake Phase (`agent/intake.py`)
-
-Produces a structured `TaskSpec` before any code is written.
-
-Flow:
-
-```text
-User prompt
-  -> pre-check (coding task? - heuristic + LLM classifier)
-  -> conversational acknowledgement
-  -> clarification loop (targeted Q&A, up to 4 rounds)
-  -> conversational transition
-  -> propose success metrics -> user confirms / revises in a loop
-  -> extract TaskSpec (language, type, requirements, constraints, metrics, ...)
-  -> display TaskSpec summary in agent pane
-  -> hand off to test generation
-```
-
-Key behaviors:
-
-- Clarification loop capped at 4 targeted questions.
-- Metrics confirmation loop until user approval.
-- Short conversational transitions before major phase changes.
-
-#### Test Generation Phase (`agent/test_generator.py`)
-
-Receives a finalized `TaskSpec` and writes a test suite using TDD-style prompting.
-
-Flow:
-
-```text
-TaskSpec received
-  -> conversational acknowledgement
-  -> LLM writes test suite covering requirements and success metrics
-  -> conversational handoff message
-  -> show proposed test file in collapsible "agent asks" bubble
-  -> user approval loop
-  -> write test file to workspace/
-```
-
-Key behaviors:
-
-- Retry loop if the LLM fails to return a usable code block.
-- User approval gate before any file write.
+- intake with clarification and structured metric confirmation
+- evaluator/result typing and metric comparison logic
+- workspace-only runtime tools
+- autonomous improvement loop with baseline, iteration control, plateau detection, and final reporting
 
 ### Hosted Provider Layer (`llm/`)
-
-The app now uses a shared provider abstraction for:
 
 - OpenAI Chat Completions
 - Anthropic Messages
 - Gemini `generateContent`
 
-The bridge and agent modules use one normalized `call_llm(messages)` path regardless of provider.
+All provider calls are normalized behind a shared `call_llm(messages)` path.
 
 ---
 
-## Planned
+## Current Constraints
 
-- Code generation from `TaskSpec` plus the approved test suite
-- Sandboxed test execution
-- Analyze results and iteratively propose or apply fixes
+- Python-first execution only
+- workspace-only edits during automated runs
+- no direct shell access for the agent
+- network access during task execution is limited to transient package installation

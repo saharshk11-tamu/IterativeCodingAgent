@@ -58,7 +58,7 @@ class AgentActivity(Message):
     """
     A structured agent event shown in the right pane.
 
-    kind: "thinking" | "tool_call" | "tool_result" | "status" | "error" | "done"
+    kind: "thinking" | "tool_call" | "tool_result" | "status" | "error" | "done" | "metrics"
     """
 
     def __init__(self, kind: str, text: str) -> None:

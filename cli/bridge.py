@@ -72,20 +72,17 @@ class AgentBridge:
         return generate_text(self.config, messages).text
 
     def _run_intake(self, user_text: str) -> None:
+        from agent.automation import AutomationOrchestrator
         from agent.intake import IntakeAgent
-        from agent.test_generator import TestGenerator
 
         try:
             intake = IntakeAgent(self)
             spec = intake.run(user_text)
             if spec is not None:
                 self._post_activity("task_ready", _format_spec_summary(spec))
-                self._post_activity("status", "transitioning to test generation...")
-
-                test_gen = TestGenerator(self)
-                test_gen.generate_and_save(spec)
-
-            # TODO: pass test_code and spec to the next pipeline stage.
+                self._post_activity("status", "transitioning to automated execution...")
+                orchestrator = AutomationOrchestrator(self)
+                orchestrator.run(spec)
 
         except Exception as exc:
             log.exception("Agent run failed")
@@ -128,7 +125,10 @@ def _format_spec_summary(spec) -> str:
         lines.extend(f"  - {constraint}" for constraint in spec.constraints)
     if spec.dependencies:
         lines.append(f"- **Dependencies**: {', '.join(spec.dependencies)}")
-    if spec.success_metrics:
-        lines.append("- **Success metrics**:")
-        lines.extend(f"  - {metric}" for metric in spec.success_metrics)
+    if spec.metrics:
+        lines.append("- **Metrics**:")
+        lines.extend(
+            f"  - {metric.name} [{metric.kind}] target {metric.target_text()}: {metric.description}"
+            for metric in spec.metrics
+        )
     return "\n".join(lines)

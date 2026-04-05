@@ -20,13 +20,14 @@ KIND_STYLES: dict[str, str] = {
     "tool_call":   "bold #ae81ff",   # monokai purple
     "tool_result": "#a6e22e",        # monokai green
     "status":      "bold #66d9ef",   # monokai cyan
+    "metrics":     "bold #78dce8",
     "error":       "bold #f92672",   # monokai red
     "done":        "bold #a6e22e",   # monokai green
     "task_ready":  "bold #fd971f",   # monokai orange
 }
 
 # Kinds that render their body as Markdown
-_MARKDOWN_KINDS = {"thinking", "task_ready"}
+_MARKDOWN_KINDS = {"thinking", "task_ready", "metrics"}
 
 
 class AgentPane(Vertical):
