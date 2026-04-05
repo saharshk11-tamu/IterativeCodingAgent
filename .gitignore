@@ -39,3 +39,6 @@ Thumbs.db
 .coverage
 htmlcov/
 *debug*.log
+
+# Local agent workspace
+workspace/

@@ -1,6 +1,6 @@
 # IterativeCodingAgent
 
-An iterative coding agent that integrates a lightweight coding model with a sandboxed shell environment. The agent takes a coding request, clarifies requirements, defines success metrics, generates tests, writes code, runs the tests, and iterates until the code passes.
+An iterative coding agent with a Textual terminal UI. The current implementation takes a coding request, clarifies requirements, defines success metrics, generates tests, and saves the proposed test file after user approval.
 
 ![Architecture](https://github.com/user-attachments/assets/e6322086-bd0d-4e92-9064-f89a5dcfb912)
 
@@ -8,37 +8,25 @@ An iterative coding agent that integrates a lightweight coding model with a sand
 
 ## Setup
 
-**Requirements:** Python 3.11+
+Requirements: Python 3.11+
 
 ```bash
-# 1. Clone the repo
 git clone <repo-url>
 cd IterativeCodingAgent
-
-# 2. Create and activate a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate
-
-# 3. Install dependencies
 pip install -r requirements.txt
 ```
 
-### LLM Provider
+### Hosted Providers
 
-You need at least one of:
+This milestone supports:
 
-**Ollama (local)**
-- Install from [ollama.com](https://ollama.com) and pull a model, e.g.:
-  ```bash
-  ollama pull qwen2.5-coder:7b
-  ```
-- Thinking models (e.g. `qwq`, `deepseek-r1`) will display internal reasoning in the agent pane
-- Ollama must be running before you launch the app (`ollama serve`)
+- OpenAI
+- Anthropic
+- Gemini
 
-**TAMU LLM (remote)**
-- Requires a TAMU API key
-- Endpoint: `https://chat-api.tamu.ai/openai/chat/completions`
-- Models that return `reasoning_content` or inline `<think>` tags will show thinking traces
+You need an API key for at least one provider. The setup screen can fetch model IDs for supported providers, and manual model entry is always available.
 
 ---
 
@@ -48,13 +36,13 @@ You need at least one of:
 python3 -m cli.app
 ```
 
-On the setup screen, pick a provider, enter credentials (API key for TAMU, host URL for Ollama), fetch available models, then connect.
+On the setup screen, pick a provider, enter an API key, optionally fetch models, enter a model ID, then connect.
 
 ---
 
 ## Debugging
 
-All debug output is written to `bridge-debug.log` in the project root (Textual owns the terminal while running, so `print` is not visible). Tail it in a second terminal:
+All debug output is written to `bridge-debug.log` in the project root. Because Textual owns the terminal while running, normal `print` output is not visible.
 
 ```bash
 tail -f bridge-debug.log
@@ -66,64 +54,73 @@ tail -f bridge-debug.log
 
 ### CLI (`cli/`)
 
-A terminal UI built with [Textual](https://github.com/Textualize/textual), split into a 60/40 layout:
+A Textual UI with a 60/40 layout:
 
-- **Left pane (conversation)** — full chat history with per-message widgets. Agent messages, user messages, and agent questions are distinct styled bubbles. Questions that include a file preview embed a collapsible code block inline (expand/collapse with a click), similar to Claude Code.
-- **Right pane (agent activity)** — timestamped log of status updates, thinking traces (rendered as Markdown), task-ready summaries, and errors.
-- **Setup screen** — LLM provider configuration (Ollama or TAMU LLM), model selection, and connection management.
+- Left pane: full conversation history with separate widgets for user messages, agent messages, and agent questions.
+- Right pane: timestamped status updates, task summaries, and errors.
+- Setup screen: hosted LLM provider configuration for OpenAI, Anthropic, and Gemini, with optional model fetching and manual model entry.
 
-### AGENT (`agent/`)
+### Agent (`agent/`)
 
 #### Intake Phase (`agent/intake.py`)
 
-Runs before any code is written. Produces a structured `TaskSpec` consumed by downstream phases.
+Produces a structured `TaskSpec` before any code is written.
 
-**Flow:**
+Flow:
 
-```
+```text
 User prompt
-  → pre-check (coding task? — heuristic + LLM classifier)
-  → conversational acknowledgement  ← LLM-generated
-  → clarification loop (targeted Q&A, up to 4 rounds)
-  → conversational transition        ← LLM-generated
-  → propose success metrics → user confirms / revises in a loop
-  → extract TaskSpec (language, type, requirements, constraints, metrics, ...)
-  → display TaskSpec summary in agent pane
-  → hand off to test generation
+  -> pre-check (coding task? - heuristic + LLM classifier)
+  -> conversational acknowledgement
+  -> clarification loop (targeted Q&A, up to 4 rounds)
+  -> conversational transition
+  -> propose success metrics -> user confirms / revises in a loop
+  -> extract TaskSpec (language, type, requirements, constraints, metrics, ...)
+  -> display TaskSpec summary in agent pane
+  -> hand off to test generation
 ```
 
-Key behaviours:
-- **Clarification loop** — the agent asks at most 4 targeted questions, stopping early when it has enough context.
-- **Metrics confirmation loop** — proposed metrics are shown to the user; feedback triggers an LLM revision pass and re-presentation until the user approves.
-- **Conversational transitions** — the agent posts a short LLM-generated message before each major phase change so the interaction feels natural rather than jumping straight to a question.
+Key behaviors:
+
+- Clarification loop capped at 4 targeted questions.
+- Metrics confirmation loop until user approval.
+- Short conversational transitions before major phase changes.
 
 #### Test Generation Phase (`agent/test_generator.py`)
 
-Receives the finalized `TaskSpec` and writes a test suite using TDD principles.
+Receives a finalized `TaskSpec` and writes a test suite using TDD-style prompting.
 
-**Flow:**
+Flow:
 
-```
+```text
 TaskSpec received
-  → conversational acknowledgement   ← LLM-generated
-  → LLM writes test suite covering all success metrics and requirements
-  → conversational handoff message   ← LLM-generated (mentions line count + metric count)
-  → show proposed test file in collapsible "agent asks" bubble
-  → user approval loop — loops until user says yes
-  → write test file to workspace/
+  -> conversational acknowledgement
+  -> LLM writes test suite covering requirements and success metrics
+  -> conversational handoff message
+  -> show proposed test file in collapsible "agent asks" bubble
+  -> user approval loop
+  -> write test file to workspace/
 ```
 
-Key behaviours:
-- **Retry loop** — if the LLM fails to produce a valid code block, it is prompted to fix it (up to 2 retries).
-- **User approval gate** — the generated file is shown inline before any disk write; the agent waits until the user explicitly approves.
-- **Thinking traces** — internal LLM reasoning is extracted from dedicated fields (`message.thinking`, `reasoning_content`) or inline `<think>` tags and displayed in the agent pane.
+Key behaviors:
+
+- Retry loop if the LLM fails to return a usable code block.
+- User approval gate before any file write.
+
+### Hosted Provider Layer (`llm/`)
+
+The app now uses a shared provider abstraction for:
+
+- OpenAI Chat Completions
+- Anthropic Messages
+- Gemini `generateContent`
+
+The bridge and agent modules use one normalized `call_llm(messages)` path regardless of provider.
 
 ---
 
-## Planned (not yet implemented)
+## Planned
 
-- Code generation from `TaskSpec` + test suite
+- Code generation from `TaskSpec` plus the approved test suite
 - Sandboxed test execution
-- Analyze results and propose fixes (iterative loop)
-
----
+- Analyze results and iteratively propose or apply fixes

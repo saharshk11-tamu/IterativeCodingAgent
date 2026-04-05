@@ -24,7 +24,7 @@ from cli.events import (
     UserReplied,
     UserSubmitted,
 )
-from cli.screens.setup_screen import LLMConfig
+from llm import LLMConfig
 from cli.widgets.agent_pane import AgentPane
 from cli.widgets.prompt_pane import PromptPane
 
