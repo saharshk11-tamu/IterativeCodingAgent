@@ -38,21 +38,54 @@ Rules:
 - Keep relevant_paths short and focused. Include only files that should be read
   before evaluator generation or implementation begins."""
 
-_EVALUATOR_SYSTEM = """\
-You are creating executable evaluation artifacts for a Python coding task.
+_REQUIRED_EVALUATOR_FILE_PATHS = ("tests/test_solution.py", ".agent/evaluator.py")
+
+_EVALUATOR_PLAN_SYSTEM = """\
+You are planning executable evaluation artifacts for a Python coding task.
 
 Return ONLY a JSON object with:
 {
   "summary": "<one short sentence>",
   "files": [
-    {"path": "tests/test_solution.py", "content": "<file contents>"},
-    {"path": ".agent/evaluator.py", "content": "<file contents>"}
+    {"path": "tests/test_solution.py", "purpose": "<short purpose>"},
+    {"path": ".agent/evaluator.py", "purpose": "<short purpose>"}
   ]
 }
 
 Rules:
+- JSON only.
+- Include exactly these two file paths and no others:
+  tests/test_solution.py
+  .agent/evaluator.py
+- Do not include file contents or code.
+- Keep purpose text short and concrete.
+- Default implementation target is workspace/solution.py unless existing
+  starter files make a different target obvious."""
+
+_EVALUATOR_TEST_FILE_SYSTEM = """\
+You are writing the Python unit-test file for a coding-task evaluator.
+
+Return ONLY the raw contents of tests/test_solution.py.
+Do not include markdown fences, JSON, or commentary.
+
+Rules:
 - Python only.
-- Use standard library testing where practical.
+- Use standard library unittest where practical.
+- Add the workspace root to sys.path before importing the implementation.
+- Use workspace-relative paths derived from __file__ or pathlib. Never hard-code
+  absolute paths like /workspace/...
+- Do not use typing generics such as List[int] inside isinstance checks.
+- Default implementation target is workspace/solution.py unless existing
+  starter files make a different target obvious."""
+
+_EVALUATOR_RUNNER_FILE_SYSTEM = """\
+You are writing the evaluator entrypoint for a Python coding task.
+
+Return ONLY the raw contents of .agent/evaluator.py.
+Do not include markdown fences, JSON, or commentary.
+
+Rules:
+- Python only.
 - The evaluator must print exactly one JSON object to stdout with keys:
   metrics, all_targets_met, summary
 - The metrics field must be a JSON array. Each item must have:
@@ -60,13 +93,11 @@ Rules:
 - The evaluator must never crash the run on missing implementation files,
   import errors, or test failures. It should catch those cases and emit metric
   failures in JSON instead.
-- Default implementation target is workspace/solution.py unless existing
-  starter files make a different target obvious.
-- The evaluator must add the workspace root to sys.path before imports.
 - Use workspace-relative paths derived from __file__ or pathlib. Never hard-code
   absolute paths like /workspace/...
 - Do not use typing generics such as List[int] inside isinstance checks.
-- Do not write conversational text outside the JSON object."""
+- Default implementation target is workspace/solution.py unless existing
+  starter files make a different target obvious."""
 
 _AUTOMATION_SYSTEM = """\
 You are the autonomous implementation phase of a coding agent.
@@ -119,12 +150,34 @@ class GroundingResult:
     relevant_paths: list[str]
 
 
+@dataclass(frozen=True)
+class EvaluatorFilePlan:
+    path: str
+    purpose: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"path": self.path, "purpose": self.purpose}
+
+
+@dataclass(frozen=True)
+class EvaluatorPlan:
+    summary: str
+    files: list[EvaluatorFilePlan]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "summary": self.summary,
+            "files": [file.to_dict() for file in self.files],
+        }
+
+
 class AutomationOrchestrator:
     MAX_ITERATIONS = 8
     PLATEAU_LIMIT = 2
     MAX_TOOL_ACTIONS_PER_ITERATION = 12
     MAX_RUN_SECONDS = 45 * 60
     MAX_EVALUATOR_GENERATION_ATTEMPTS = 3
+    MAX_EVALUATOR_FILE_GENERATION_ATTEMPTS = 2
     MAX_TOOL_REQUEST_RETRIES = 2
 
     def __init__(self, bridge: BridgeProtocol) -> None:
@@ -348,13 +401,11 @@ class AutomationOrchestrator:
             ],
         )
 
-    def _generate_evaluator(
+    def _evaluator_context_payload(
         self,
         spec: TaskSpec,
         runtime: WorkspaceRuntime,
         grounding: GroundingResult,
-        *,
-        validation_feedback: str | None = None,
     ) -> dict[str, Any]:
         context_files = []
         for path in grounding.relevant_paths[:6]:
@@ -365,28 +416,101 @@ class AutomationOrchestrator:
             if result.ok:
                 context_files.append({"path": path, "content": result.data.get("content", "")})
 
-        payload = {
+        return {
             "task_spec": spec.to_dict(),
             "workspace_files": runtime.workspace_overview()["files"],
             "context_files": context_files,
         }
+
+    def _generate_evaluator_plan(
+        self,
+        spec: TaskSpec,
+        runtime: WorkspaceRuntime,
+        grounding: GroundingResult,
+        *,
+        validation_feedback: str | None = None,
+    ) -> EvaluatorPlan:
+        payload = self._evaluator_context_payload(spec, runtime, grounding)
         if validation_feedback:
             payload["previous_generation_issue"] = validation_feedback
 
         messages = [
-            {"role": "system", "content": _EVALUATOR_SYSTEM},
+            {"role": "system", "content": _EVALUATOR_PLAN_SYSTEM},
             {
                 "role": "user",
                 "content": json.dumps(payload, indent=2),
             },
         ]
+        data = self._request_json_object(
+            messages,
+            correction_prompt=(
+                "Your previous response was invalid. Reply with exactly one JSON object "
+                "matching the evaluator plan schema. Include only the required file paths, "
+                "and do not include code, markdown, or commentary."
+            ),
+        )
+        return self._parse_evaluator_plan(data)
 
+    def _generate_evaluator_file(
+        self,
+        spec: TaskSpec,
+        runtime: WorkspaceRuntime,
+        grounding: GroundingResult,
+        plan: EvaluatorPlan,
+        file_plan: EvaluatorFilePlan,
+        *,
+        validation_feedback: str | None = None,
+    ) -> dict[str, str]:
+        payload = self._evaluator_context_payload(spec, runtime, grounding)
+        payload["evaluator_plan"] = plan.to_dict()
+        payload["target_file"] = file_plan.to_dict()
+        if validation_feedback:
+            payload["previous_file_issue"] = validation_feedback
+
+        messages = [
+            {"role": "system", "content": self._evaluator_file_system(file_plan.path)},
+            {
+                "role": "user",
+                "content": json.dumps(payload, indent=2),
+            },
+        ]
         raw = self._bridge.call_llm(messages)
-        data = self._parse_json_response(raw)
         return {
-            "summary": str(data.get("summary", "")).strip(),
-            "files": self._normalize_generated_files(data),
+            "path": file_plan.path,
+            "content": self._extract_code_response(raw),
         }
+
+    def _generate_validated_evaluator_file(
+        self,
+        spec: TaskSpec,
+        runtime: WorkspaceRuntime,
+        grounding: GroundingResult,
+        plan: EvaluatorPlan,
+        file_plan: EvaluatorFilePlan,
+        *,
+        validation_feedback: str | None = None,
+    ) -> dict[str, str]:
+        last_issue = validation_feedback
+        for attempt in range(1, self.MAX_EVALUATOR_FILE_GENERATION_ATTEMPTS + 1):
+            try:
+                generated_file = self._generate_evaluator_file(
+                    spec,
+                    runtime,
+                    grounding,
+                    plan,
+                    file_plan,
+                    validation_feedback=last_issue,
+                )
+                self._validate_generated_file(generated_file)
+                return generated_file
+            except Exception as exc:  # noqa: BLE001
+                last_issue = str(exc)
+                self._bridge.post_activity(
+                    "error",
+                    f"{file_plan.path} generation attempt {attempt} failed: {last_issue}",
+                )
+
+        raise ValueError(f"unable to generate {file_plan.path}: {last_issue or 'unknown error'}")
 
     def _prepare_evaluator(
         self,
@@ -404,13 +528,23 @@ class AutomationOrchestrator:
                 )
 
             try:
-                evaluator_files = self._generate_evaluator(
+                evaluator_plan = self._generate_evaluator_plan(
                     spec,
                     runtime,
                     grounding,
                     validation_feedback=last_issue,
                 )
-                self._validate_generated_files(evaluator_files["files"])
+                evaluator_files = []
+                for file_plan in evaluator_plan.files:
+                    evaluator_files.append(
+                        self._generate_validated_evaluator_file(
+                            spec,
+                            runtime,
+                            grounding,
+                            evaluator_plan,
+                            file_plan,
+                        )
+                    )
             except Exception as exc:  # noqa: BLE001
                 last_issue = str(exc)
                 self._bridge.post_activity(
@@ -419,7 +553,7 @@ class AutomationOrchestrator:
                 )
                 continue
 
-            for file_spec in evaluator_files["files"]:
+            for file_spec in evaluator_files:
                 runtime.write_file(file_spec["path"], file_spec["content"])
 
             baseline = runtime.run_evaluator()
@@ -427,13 +561,54 @@ class AutomationOrchestrator:
             if validation_issue is None:
                 self._bridge.post_activity(
                     "tool_result",
-                    f"evaluator ready: {', '.join(file['path'] for file in evaluator_files['files'])}",
+                    f"evaluator ready: {', '.join(file['path'] for file in evaluator_files)}",
                 )
                 return {
-                    "summary": evaluator_files["summary"],
-                    "files": evaluator_files["files"],
+                    "summary": evaluator_plan.summary,
+                    "files": evaluator_files,
                     "baseline": baseline,
                 }
+
+            repair_path = self._suggest_evaluator_repair_path(validation_issue)
+            if repair_path:
+                self._bridge.post_activity(
+                    "status",
+                    f"repairing {repair_path} after evaluator validation failed",
+                )
+                try:
+                    repaired_file = self._generate_validated_evaluator_file(
+                        spec,
+                        runtime,
+                        grounding,
+                        evaluator_plan,
+                        self._plan_file_by_path(evaluator_plan, repair_path),
+                        validation_feedback=validation_issue,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    last_issue = str(exc)
+                    self._bridge.post_activity(
+                        "error",
+                        f"evaluator repair failed on attempt {attempt}: {last_issue}",
+                    )
+                    continue
+
+                runtime.write_file(repaired_file["path"], repaired_file["content"])
+                for file_spec in evaluator_files:
+                    if file_spec["path"] == repaired_file["path"]:
+                        file_spec["content"] = repaired_file["content"]
+                        break
+                baseline = runtime.run_evaluator()
+                validation_issue = self._evaluator_validation_issue(spec, baseline)
+                if validation_issue is None:
+                    self._bridge.post_activity(
+                        "tool_result",
+                        f"evaluator ready: {', '.join(file['path'] for file in evaluator_files)}",
+                    )
+                    return {
+                        "summary": evaluator_plan.summary,
+                        "files": evaluator_files,
+                        "baseline": baseline,
+                    }
 
             last_issue = validation_issue
             self._bridge.post_activity(
@@ -769,43 +944,124 @@ class AutomationOrchestrator:
             raise ValueError("expected a JSON object")
         return data
 
-    def _normalize_generated_files(self, data: dict[str, Any]) -> list[dict[str, str]]:
+    def _request_json_object(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        correction_prompt: str,
+        retries: int = 1,
+    ) -> dict[str, Any]:
+        attempt_messages = list(messages)
+        last_error = "invalid JSON response"
+        for _attempt in range(retries + 1):
+            raw = self._bridge.call_llm(attempt_messages)
+            try:
+                return self._parse_json_response(raw)
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                attempt_messages.append({"role": "assistant", "content": raw[:4000]})
+                attempt_messages.append({"role": "user", "content": correction_prompt})
+        raise ValueError(last_error)
+
+    def _parse_evaluator_plan(self, data: dict[str, Any]) -> EvaluatorPlan:
+        summary = str(data.get("summary", "")).strip() or "evaluator artifacts planned"
         files = data.get("files")
         if not isinstance(files, list):
-            raise ValueError("evaluator response did not include files")
+            raise ValueError("evaluator plan did not include files")
 
-        normalized_files: list[dict[str, str]] = []
+        file_plans: list[EvaluatorFilePlan] = []
         for item in files:
             if not isinstance(item, dict):
                 continue
             path = str(item.get("path", "")).strip().replace("\\", "/")
-            content = str(item.get("content", ""))
+            purpose = str(item.get("purpose", "")).strip()
             if path.startswith("./"):
                 path = path[2:]
-            if not path or not content:
+            if not path or not purpose:
                 continue
-            normalized_files.append({"path": path, "content": content})
+            file_plans.append(EvaluatorFilePlan(path=path, purpose=purpose))
 
-        if not normalized_files:
-            raise ValueError("evaluator response included no writable files")
-        return normalized_files
+        paths = {file.path for file in file_plans}
+        required = set(_REQUIRED_EVALUATOR_FILE_PATHS)
+        missing = sorted(required - paths)
+        extra = sorted(paths - required)
+        if missing or extra:
+            problems = []
+            if missing:
+                problems.append(f"missing {', '.join(missing)}")
+            if extra:
+                problems.append(f"unexpected {', '.join(extra)}")
+            raise ValueError(f"evaluator plan files are invalid: {'; '.join(problems)}")
 
-    def _validate_generated_files(self, files: list[dict[str, str]]) -> None:
-        paths = {file["path"] for file in files}
-        if ".agent/evaluator.py" not in paths:
-            raise ValueError("evaluator response must include .agent/evaluator.py")
+        ordered_files = [self._plan_file_by_path(EvaluatorPlan(summary, file_plans), path) for path in _REQUIRED_EVALUATOR_FILE_PATHS]
+        return EvaluatorPlan(summary=summary, files=ordered_files)
 
-        for file in files:
-            path = file["path"]
-            content = file["content"]
-            if path.startswith("/") or path.startswith("../"):
-                raise ValueError(f"generated file path must stay workspace-relative: {path}")
-            if not (path.startswith(".agent/") or path.startswith("tests/")):
-                raise ValueError(f"generated file path is not allowed: {path}")
-            if "/workspace/" in content or "\\workspace\\" in content:
-                raise ValueError(f"{path} hard-codes an absolute workspace path")
-            if re.search(r"isinstance\s*\([^)]*List\[[^)]*\)", content):
-                raise ValueError(f"{path} uses typing generics inside isinstance")
+    def _plan_file_by_path(self, plan: EvaluatorPlan, path: str) -> EvaluatorFilePlan:
+        for file_plan in plan.files:
+            if file_plan.path == path:
+                return file_plan
+        raise ValueError(f"evaluator plan did not include {path}")
+
+    def _evaluator_file_system(self, path: str) -> str:
+        if path == "tests/test_solution.py":
+            return _EVALUATOR_TEST_FILE_SYSTEM
+        if path == ".agent/evaluator.py":
+            return _EVALUATOR_RUNNER_FILE_SYSTEM
+        raise ValueError(f"unsupported evaluator file path: {path}")
+
+    def _extract_code_response(self, raw: str) -> str:
+        cleaned = raw.strip()
+        if not cleaned:
+            raise ValueError("generated file content was empty")
+
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[^\n]*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned)
+            cleaned = cleaned.strip()
+        else:
+            match = re.search(r"```[^\n]*\n(.*?)\n```", cleaned, re.DOTALL)
+            if match:
+                cleaned = match.group(1).strip()
+
+        if not cleaned:
+            raise ValueError("generated file content was empty")
+        return cleaned
+
+    def _validate_generated_file(self, file_spec: dict[str, str]) -> None:
+        path = file_spec["path"]
+        content = file_spec["content"]
+        if path.startswith("/") or path.startswith("../"):
+            raise ValueError(f"generated file path must stay workspace-relative: {path}")
+        if path not in _REQUIRED_EVALUATOR_FILE_PATHS:
+            raise ValueError(f"generated file path is not allowed: {path}")
+        if not content.strip():
+            raise ValueError(f"{path} was empty")
+        if "/workspace/" in content or "\\workspace\\" in content:
+            raise ValueError(f"{path} hard-codes an absolute workspace path")
+        if re.search(r"isinstance\s*\([^)]*List\[[^)]*\)", content):
+            raise ValueError(f"{path} uses typing generics inside isinstance")
+        try:
+            compile(content, path, "exec")
+        except SyntaxError as exc:
+            raise ValueError(
+                f"{path} has invalid Python syntax: {exc.msg} (line {exc.lineno})"
+            ) from exc
+
+    def _suggest_evaluator_repair_path(self, validation_issue: str) -> str | None:
+        lowered = validation_issue.lower()
+        if "tests/test_solution.py" in lowered:
+            return "tests/test_solution.py"
+        if ".agent/evaluator.py" in lowered:
+            return ".agent/evaluator.py"
+        if lowered.startswith("evaluator execution failed:"):
+            return ".agent/evaluator.py"
+        if lowered.startswith("evaluator returned invalid json:"):
+            return ".agent/evaluator.py"
+        if lowered.startswith("evaluator file is missing."):
+            return ".agent/evaluator.py"
+        if "metric" in lowered:
+            return ".agent/evaluator.py"
+        return None
 
     def _evaluator_validation_issue(
         self,

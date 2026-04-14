@@ -1,16 +1,17 @@
 """
-cli/screens/setup_screen.py - Hosted LLM connection screen.
+cli/screens/setup_screen.py - LLM connection screen.
 
 Supported providers:
   - OpenAI
   - Anthropic
   - Gemini
+  - Ollama
 
 Keyboard shortcuts
 ------------------
   Tab / Shift+Tab  - move between fields
   Arrow keys       - switch provider (inside the RadioSet)
-  Enter            - on API key: fetch models; on model field: connect
+  Enter            - on API key: fetch models for hosted providers; on model field: connect
   F5               - fetch models
   Ctrl+S           - connect
   Escape           - quit
@@ -36,37 +37,57 @@ from textual.widgets import (
     Static,
 )
 
-from llm import LLMConfig, ModelSummary, ProviderKind, list_models
+from llm import LLMConfig, ModelSummary, OLLAMA_BASE_URL, ProviderKind, list_models
 
 PROVIDER_LABELS: dict[ProviderKind, str] = {
     "openai": "OpenAI",
     "anthropic": "Anthropic",
     "gemini": "Gemini",
+    "ollama": "Ollama",
 }
 
 MODEL_PLACEHOLDERS: dict[ProviderKind, str] = {
     "openai": "Enter OpenAI model ID",
     "anthropic": "Enter Anthropic model ID",
     "gemini": "Enter Gemini model ID",
+    "ollama": "Enter Ollama model ID (for example gemma4:latest)",
 }
 
 API_KEY_PLACEHOLDERS: dict[ProviderKind, str] = {
     "openai": "OpenAI API key",
     "anthropic": "Anthropic API key",
     "gemini": "Gemini API key",
+    "ollama": "",
 }
 
 
-def build_llm_config(provider: ProviderKind, api_key: str, model: str) -> LLMConfig:
+def provider_requires_api_key(provider: ProviderKind) -> bool:
+    return provider != "ollama"
+
+
+def build_llm_config(
+    provider: ProviderKind,
+    api_key: str,
+    model: str,
+    *,
+    require_model: bool = True,
+) -> LLMConfig:
     api_key = api_key.strip()
     model = model.strip()
 
-    if not api_key:
+    if provider_requires_api_key(provider) and not api_key:
         raise ValueError("api key required")
-    if not model:
+    if require_model and not model:
         raise ValueError("model required")
+    if provider == "ollama":
+        api_key = api_key or "ollama"
 
-    return LLMConfig(provider=provider, model=model, api_key=api_key)
+    return LLMConfig(
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        base_url=OLLAMA_BASE_URL if provider == "ollama" else None,
+    )
 
 
 def model_summaries_to_options(
@@ -102,11 +123,12 @@ class SetupScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Container(
             Static("agent setup", id="setup-title"),
-            Static("connect a hosted llm to get started", id="setup-subtitle"),
+            Static("connect an llm provider to get started", id="setup-subtitle"),
             RadioSet(
                 RadioButton("openai", value=True, id="radio-openai"),
                 RadioButton("anthropic", id="radio-anthropic"),
                 RadioButton("gemini", id="radio-gemini"),
+                RadioButton("ollama", id="radio-ollama"),
                 id="provider-toggle",
             ),
             Vertical(
@@ -140,11 +162,16 @@ class SetupScreen(Screen):
             self.provider = "anthropic"
         elif event.pressed.id == "radio-gemini":
             self.provider = "gemini"
+        elif event.pressed.id == "radio-ollama":
+            self.provider = "ollama"
         else:
             self.provider = "openai"
 
         self._apply_provider_hints()
-        self.query_one("#api-key", Input).focus()
+        if provider_requires_api_key(self.provider):
+            self.query_one("#api-key", Input).focus()
+        else:
+            self.query_one("#model-input", Input).focus()
 
     @on(Input.Submitted, "#api-key")
     def _api_key_submitted(self) -> None:
@@ -164,10 +191,15 @@ class SetupScreen(Screen):
 
     def action_fetch_models(self) -> None:
         api_key = self.query_one("#api-key", Input).value.strip()
-        if not api_key:
+        if provider_requires_api_key(self.provider) and not api_key:
             self._set_status("api key required to fetch models", error=True)
             return
-        config = LLMConfig(provider=self.provider, model="", api_key=api_key)
+        config = build_llm_config(
+            self.provider,
+            api_key,
+            "",
+            require_model=False,
+        )
         self._fetch_models(config)
 
     def action_connect(self) -> None:
@@ -213,9 +245,28 @@ class SetupScreen(Screen):
         )
 
     def _apply_provider_hints(self) -> None:
-        self.query_one("#api-key", Input).placeholder = API_KEY_PLACEHOLDERS[self.provider]
-        self.query_one("#model-input", Input).placeholder = MODEL_PLACEHOLDERS[self.provider]
-        self.query_one("#model-select", Select).set_options([])
+        api_key_label = self.query_one("#api-key-label", Label)
+        api_key_input = self.query_one("#api-key", Input)
+        model_label = self.query_one("#model-label", Label)
+        model_input = self.query_one("#model-input", Input)
+        model_select = self.query_one("#model-select", Select)
+
+        show_api_key = provider_requires_api_key(self.provider)
+        api_key_label.display = show_api_key
+        api_key_input.display = show_api_key
+        api_key_input.disabled = not show_api_key
+        api_key_input.placeholder = API_KEY_PLACEHOLDERS[self.provider]
+        model_input.placeholder = MODEL_PLACEHOLDERS[self.provider]
+        model_select.set_options([])
+
+        if self.provider == "ollama":
+            model_label.update("model  [dim](manual entry or F5 for local models)[/dim]")
+            model_select.prompt = "press F5 to query local Ollama models..."
+            self._set_status("Ollama selected - local API key not required")
+            return
+
+        model_label.update("model  [dim](manual entry always allowed)[/dim]")
+        model_select.prompt = "press F5 to fetch models..."
         self._set_status(f"{PROVIDER_LABELS[self.provider]} selected")
 
     def _update_model_select(self, models: list[ModelSummary]) -> None:

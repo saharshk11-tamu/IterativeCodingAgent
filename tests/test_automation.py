@@ -16,6 +16,7 @@ class _FakeBridge:
         self.activities: list[tuple[str, str]] = []
         self.messages: list[str] = []
         self.questions: list[str] = []
+        self.llm_calls: list[list[dict]] = []
 
     def ask_user(self, question: str) -> str:
         self.questions.append(question)
@@ -33,6 +34,7 @@ class _FakeBridge:
         self.messages.append(text)
 
     def call_llm(self, messages: list[dict]) -> str:
+        self.llm_calls.append(messages)
         if not self._responses:
             raise AssertionError("No scripted LLM response left")
         return self._responses.pop(0)
@@ -142,7 +144,9 @@ class AutomationOrchestratorTests(unittest.TestCase):
         bridge = _FakeBridge(
             [
                 '{"status":"ready","summary":"workspace ready","relevant_paths":[]}',
-                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","content":"import unittest\\n"},{"path":".agent/evaluator.py","content":"print(1)\\n"}]}',
+                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","purpose":"validate correctness"},{"path":".agent/evaluator.py","purpose":"report metrics"}]}',
+                "import unittest\n",
+                "print(1)\n",
                 '{"type":"tool_call","tool":"write_file","args":{"path":"solution.py","content":"def solve():\\n    return 1\\n"},"reason":"create implementation"}',
                 '{"type":"tool_call","tool":"run_evaluator","args":{},"reason":"check metrics"}',
                 '{"type":"finish","summary":"done"}',
@@ -198,7 +202,9 @@ class AutomationOrchestratorTests(unittest.TestCase):
         bridge = _FakeBridge(
             [
                 '{"status":"ready","summary":"workspace ready","relevant_paths":["solution.py"]}',
-                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","content":"import unittest\\n"},{"path":".agent/evaluator.py","content":"print(1)\\n"}]}',
+                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","purpose":"validate correctness"},{"path":".agent/evaluator.py","purpose":"report metrics"}]}',
+                "import unittest\n",
+                "print(1)\n",
                 '{"type":"tool_call","tool":"read_file","args":{"path":"solution.py"},"reason":"inspect starter code"}',
                 '{"type":"tool_call","tool":"run_evaluator","args":{},"reason":"check metrics"}',
                 '{"type":"finish","summary":"done"}',
@@ -231,7 +237,9 @@ class AutomationOrchestratorTests(unittest.TestCase):
         bridge = _FakeBridge(
             [
                 '{"status":"ready","summary":"workspace ready","relevant_paths":[]}',
-                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","content":"import unittest\\n"},{"path":".agent/evaluator.py","content":"print(1)\\n"}]}',
+                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","purpose":"validate correctness"},{"path":".agent/evaluator.py","purpose":"report metrics"}]}',
+                "import unittest\n",
+                "print(1)\n",
                 '{"type":"tool_call","tool":"write_file","args":{"path":"solution.py","content":"def solve():\\n    return 1\\n"},"reason":"create implementation"}',
                 '{"type":"tool_call","tool":"run_evaluator","args":{},"reason":"check metrics"}',
                 '{"type":"finish","summary":"done"}',
@@ -266,7 +274,9 @@ class AutomationOrchestratorTests(unittest.TestCase):
         bridge = _FakeBridge(
             [
                 '{"status":"ready","summary":"workspace ready","relevant_paths":[]}',
-                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","content":"import unittest\\n"},{"path":".agent/evaluator.py","content":"print(1)\\n"}]}',
+                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","purpose":"validate correctness"},{"path":".agent/evaluator.py","purpose":"report metrics"}]}',
+                "import unittest\n",
+                "print(1)\n",
                 "this is not json",
                 '{"type":"finish","summary":"stop for now"}',
                 '{"type":"finish","summary":"stop for now"}',
@@ -320,8 +330,10 @@ class AutomationOrchestratorTests(unittest.TestCase):
         bridge = _FakeBridge(
             [
                 '{"status":"ready","summary":"workspace ready","relevant_paths":[]}',
-                '{"summary":"broken evaluator","files":[{"path":"tests/test_solution.py","content":"import unittest\\n"},{"path":".agent/evaluator.py","content":"BROKEN"}]}',
-                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","content":"import unittest\\n"},{"path":".agent/evaluator.py","content":"print(1)\\n"}]}',
+                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","purpose":"validate correctness"},{"path":".agent/evaluator.py","purpose":"report metrics"}]}',
+                "import unittest\n",
+                "BROKEN\n",
+                "print(1)\n",
                 '{"type":"tool_call","tool":"write_file","args":{"path":"solution.py","content":"def solve():\\n    return 1\\n"},"reason":"create implementation"}',
                 '{"type":"tool_call","tool":"run_evaluator","args":{},"reason":"check metrics"}',
                 '{"type":"finish","summary":"done"}',
@@ -367,5 +379,45 @@ class AutomationOrchestratorTests(unittest.TestCase):
 
         self.assertEqual(report["stop_reason"], "all_targets_met")
         self.assertTrue(
-            any("evaluator validation failed" in text for kind, text in bridge.activities if kind == "error")
+            any(
+                "repairing .agent/evaluator.py after evaluator validation failed" in text
+                for kind, text in bridge.activities
+                if kind == "status"
+            )
+        )
+        self.assertEqual(runtime.files["tests/test_solution.py"], "import unittest")
+        self.assertEqual(runtime.files[".agent/evaluator.py"], "print(1)")
+
+    @patch("agent.automation.WorkspaceRuntime", _FakeRuntime)
+    def test_orchestrator_retries_file_with_python_syntax_error(self) -> None:
+        bridge = _FakeBridge(
+            [
+                '{"status":"ready","summary":"workspace ready","relevant_paths":[]}',
+                '{"summary":"evaluator ready","files":[{"path":"tests/test_solution.py","purpose":"validate correctness"},{"path":".agent/evaluator.py","purpose":"report metrics"}]}',
+                "def broken(\n",
+                "import unittest\n",
+                "print(1)\n",
+                '{"type":"tool_call","tool":"write_file","args":{"path":"solution.py","content":"def solve():\\n    return 1\\n"},"reason":"create implementation"}',
+                '{"type":"tool_call","tool":"run_evaluator","args":{},"reason":"check metrics"}',
+                '{"type":"finish","summary":"done"}',
+            ]
+        )
+        spec = TaskSpec(
+            original_prompt="write a function",
+            refined_description="Write a function.",
+            language="python",
+            task_type="function",
+            metrics=[
+                MetricSpec("tests", "All tests pass", "pass_fail", True, 1),
+            ],
+        )
+
+        runtime = _FakeRuntime("./workspace", spec.metrics)
+
+        with patch("agent.automation.WorkspaceRuntime", return_value=runtime):
+            report = AutomationOrchestrator(bridge).run(spec, workspace_dir="./workspace")
+
+        self.assertEqual(report["stop_reason"], "all_targets_met")
+        self.assertTrue(
+            any("invalid Python syntax" in text for kind, text in bridge.activities if kind == "error")
         )

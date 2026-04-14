@@ -1,4 +1,4 @@
-"""Hosted LLM provider adapters used by the Textual app."""
+"""LLM provider adapters used by the Textual app."""
 
 from __future__ import annotations
 
@@ -7,10 +7,15 @@ from typing import Literal, Protocol
 
 import httpx
 
-ProviderKind = Literal["openai", "anthropic", "gemini"]
+ProviderKind = Literal["openai", "anthropic", "gemini", "ollama"]
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
+OLLAMA_BASE_URL = "http://localhost:11434/v1"
+OLLAMA_API_BASE_URL = "http://localhost:11434"
+OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/chat/completions"
+OLLAMA_MODELS_URL = f"{OLLAMA_BASE_URL}/models"
+OLLAMA_TAGS_URL = f"{OLLAMA_API_BASE_URL}/api/tags"
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -24,6 +29,7 @@ class LLMConfig:
     provider: ProviderKind
     model: str
     api_key: str
+    base_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,13 +103,30 @@ class _BaseAdapter:
             raise LLMProviderError(f"{provider} returned invalid JSON") from exc
 
 
-class _OpenAIAdapter(_BaseAdapter):
+class _OpenAICompatibleAdapter(_BaseAdapter):
     def list_models(self, config: LLMConfig) -> list[ModelSummary]:
+        if config.provider == "ollama":
+            data = self._request_json(
+                config.provider,
+                "GET",
+                _ollama_tags_url(config),
+                timeout=10.0,
+            )
+            seen: set[str] = set()
+            models: list[ModelSummary] = []
+            for model in data.get("models", []):
+                model_id = _extract_ollama_model_id(model)
+                if not model_id or model_id in seen:
+                    continue
+                seen.add(model_id)
+                models.append(ModelSummary(id=model_id))
+            return models
+
         data = self._request_json(
-            "openai",
+            config.provider,
             "GET",
-            OPENAI_MODELS_URL,
-            headers=_bearer_headers(config.api_key),
+            _openai_compatible_models_url(config),
+            headers=_openai_compatible_headers(config),
             timeout=10.0,
         )
         models = [
@@ -120,21 +143,21 @@ class _OpenAIAdapter(_BaseAdapter):
             "messages": _coerce_openai_messages(messages),
         }
         data = self._request_json(
-            "openai",
+            config.provider,
             "POST",
-            OPENAI_CHAT_URL,
-            headers=_bearer_headers(config.api_key),
+            _openai_compatible_chat_url(config),
+            headers=_openai_compatible_headers(config),
             json_body=payload,
             timeout=120.0,
         )
         choices = data.get("choices", [])
         if not choices:
-            raise LLMProviderError("openai returned no choices")
+            raise LLMProviderError(f"{config.provider} returned no choices")
         message = choices[0].get("message", {})
         text = _flatten_openai_content(message.get("content"))
         if not text:
-            raise LLMProviderError("openai returned an empty message")
-        return LLMResult(text=text, provider="openai", model=config.model)
+            raise LLMProviderError(f"{config.provider} returned an empty message")
+        return LLMResult(text=text, provider=config.provider, model=config.model)
 
 
 class _AnthropicAdapter(_BaseAdapter):
@@ -264,13 +287,51 @@ def _adapter_for(
     *,
     transport: httpx.BaseTransport | None = None,
 ) -> ProviderAdapter:
-    if provider == "openai":
-        return _OpenAIAdapter(transport=transport)
+    if provider in {"openai", "ollama"}:
+        return _OpenAICompatibleAdapter(transport=transport)
     if provider == "anthropic":
         return _AnthropicAdapter(transport=transport)
     if provider == "gemini":
         return _GeminiAdapter(transport=transport)
     raise LLMProviderError(f"unsupported provider: {provider}")
+
+
+def _openai_compatible_models_url(config: LLMConfig) -> str:
+    return f"{_openai_compatible_base_url(config)}/models"
+
+
+def _openai_compatible_chat_url(config: LLMConfig) -> str:
+    return f"{_openai_compatible_base_url(config)}/chat/completions"
+
+
+def _openai_compatible_base_url(config: LLMConfig) -> str:
+    base_url = (config.base_url or "").strip()
+    if base_url:
+        return base_url.rstrip("/")
+    if config.provider == "ollama":
+        return OLLAMA_BASE_URL
+    return OPENAI_MODELS_URL.rsplit("/", 1)[0]
+
+
+def _ollama_tags_url(config: LLMConfig) -> str:
+    native_base_url = _ollama_native_base_url(config)
+    return f"{native_base_url}/api/tags"
+
+
+def _ollama_native_base_url(config: LLMConfig) -> str:
+    base_url = (config.base_url or "").strip().rstrip("/")
+    if not base_url:
+        return OLLAMA_API_BASE_URL
+    if base_url.endswith("/v1"):
+        return base_url[:-3]
+    return base_url
+
+
+def _openai_compatible_headers(config: LLMConfig) -> dict[str, str]:
+    api_key = config.api_key.strip()
+    if config.provider == "ollama" and not api_key:
+        api_key = "ollama"
+    return _bearer_headers(api_key)
 
 
 def _bearer_headers(api_key: str) -> dict[str, str]:
@@ -388,3 +449,13 @@ def _extract_error_detail(response: httpx.Response) -> str:
     if isinstance(message, str):
         return message.strip()
     return response.text.strip()
+
+
+def _extract_ollama_model_id(model: object) -> str:
+    if not isinstance(model, dict):
+        return ""
+    for key in ("name", "model"):
+        value = model.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""

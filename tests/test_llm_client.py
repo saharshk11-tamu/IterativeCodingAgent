@@ -11,6 +11,8 @@ from llm.client import (
     GEMINI_MODELS_URL,
     LLMConfig,
     LLMProviderError,
+    OLLAMA_CHAT_URL,
+    OLLAMA_TAGS_URL,
     OPENAI_CHAT_URL,
     OPENAI_MODELS_URL,
     generate_text,
@@ -81,6 +83,74 @@ class OpenAIAdapterTests(unittest.TestCase):
                 LLMConfig(provider="openai", model="", api_key="bad-key"),
                 transport=httpx.MockTransport(handler),
             )
+
+
+class OllamaAdapterTests(unittest.TestCase):
+    def test_ollama_generate_text_uses_openai_compatible_local_endpoint(self) -> None:
+        messages = [{"role": "user", "content": "Hello"}]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.method, "POST")
+            self.assertEqual(str(request.url), OLLAMA_CHAT_URL)
+            self.assertEqual(request.headers["Authorization"], "Bearer ollama")
+            payload = json.loads(request.content.decode())
+            self.assertEqual(payload["model"], "gemma4:latest")
+            self.assertEqual(payload["messages"], messages)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "hello from ollama"}}]},
+            )
+
+        result = generate_text(
+            LLMConfig(
+                provider="ollama",
+                model="gemma4:latest",
+                api_key="ollama",
+            ),
+            messages,
+            transport=httpx.MockTransport(handler),
+        )
+
+        self.assertEqual(result.text, "hello from ollama")
+        self.assertEqual(result.provider, "ollama")
+
+    def test_ollama_generate_text_defaults_dummy_bearer_key_when_blank(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.headers["Authorization"], "Bearer ollama")
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "hello from ollama"}}]},
+            )
+
+        result = generate_text(
+            LLMConfig(provider="ollama", model="gemma4:latest", api_key=""),
+            [{"role": "user", "content": "Hello"}],
+            transport=httpx.MockTransport(handler),
+        )
+
+        self.assertEqual(result.text, "hello from ollama")
+
+    def test_ollama_list_models_reads_native_tags_endpoint(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(str(request.url), OLLAMA_TAGS_URL)
+            self.assertNotIn("Authorization", request.headers)
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {"name": "gemma4:latest"},
+                        {"model": "llama3.2"},
+                    ]
+                },
+            )
+
+        models = list_models(
+            LLMConfig(provider="ollama", model="", api_key=""),
+            transport=httpx.MockTransport(handler),
+        )
+
+        self.assertEqual([model.id for model in models], ["gemma4:latest", "llama3.2"])
 
 
 class AnthropicAdapterTests(unittest.TestCase):

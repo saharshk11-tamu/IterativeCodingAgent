@@ -2,7 +2,7 @@
 
 An iterative coding agent with a Textual terminal UI. The current implementation can:
 
-- connect to hosted LLM providers
+- connect to hosted LLM providers and local Ollama models
 - clarify a coding task
 - confirm structured executable metrics and targets
 - generate evaluator artifacts under `workspace/.agent/`
@@ -23,15 +23,18 @@ cd IterativeCodingAgent
 uv sync
 ```
 
-### Hosted Providers
+### Providers
 
 Supported providers:
 
 - OpenAI
 - Anthropic
 - Gemini
+- Ollama
 
-You need an API key for at least one provider. The setup screen can fetch model IDs for supported providers, and manual model entry is always available.
+You need an API key for hosted providers. For Ollama, the app uses the local OpenAI-compatible API at `http://localhost:11434/v1` and does not prompt for an API key.
+
+The setup screen can fetch model IDs for supported providers. For Ollama, model discovery comes from the local Ollama instance, and manual model entry is always available.
 
 ---
 
@@ -41,7 +44,7 @@ You need an API key for at least one provider. The setup screen can fetch model 
 uv run python -m cli.app
 ```
 
-On the setup screen, pick a provider, enter an API key, optionally fetch models, enter a model ID, then connect.
+On the setup screen, pick a provider, enter an API key if needed, optionally fetch models, enter a model ID, then connect. For Ollama, use `F5` to query your local models or enter one manually.
 
 ---
 
@@ -93,7 +96,7 @@ tail -f bridge-debug.log
 ### CLI (`cli/`)
 
 - 60/40 Textual layout for conversation and agent activity
-- hosted provider setup for OpenAI, Anthropic, and Gemini
+- provider setup for OpenAI, Anthropic, Gemini, and Ollama
 - activity log entries for status, tool calls, tool results, and metrics
 
 ### Agent (`agent/`)
@@ -108,6 +111,7 @@ tail -f bridge-debug.log
 - OpenAI Chat Completions
 - Anthropic Messages
 - Gemini `generateContent`
+- Ollama via the OpenAI-compatible local API
 
 All provider calls are normalized behind a shared `call_llm(messages)` path.
 
